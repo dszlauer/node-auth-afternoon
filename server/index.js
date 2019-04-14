@@ -1,20 +1,131 @@
-const express = require('express');
+const express = require("express");
+const bodyParser = require("body-parser");
 const app = express();
+const session = require("express-session");
+const axios = require("axios");
+require("dotenv").config();
 
-app.get('/callback', (req, res) => {
+app.use(bodyParser.json());
 
+app.use(
+  session({
+    secret: "hglsldsLLKJDldkja",
+    resave: false,
+    saveUninitialized: false
+  })
+);
+
+app.get("/callback", (req, res) => {
   // Code below
+  let payload = {
+    client_id: process.env.REACT_APP_AUTH0_CLIENT_ID,
+    client_secret: process.env.AUTH0_CLIENT_SECRET,
+    code: req.query.code,
+    grant_type: "authoriztion_code",
+    redirect_uri: `http://${req.headers.host}/callback`
+  };
 
-})
+  function exchangeCodeForAccessToken() {
+    return axios.post(
+      `https://${process.env.REACT_APP_AUTH0_DOMAIN}/oauth/token`,
+      payload
+    );
+  }
 
-app.get('/api/user-data', (req, res) => {
-  res.status(200).json(req.session.user)
-})
+  function exchangeAccessTokenForUserInfo(accessTokenResponse) {
+    const accessToken = accessTokenResponse.data.access_token;
+    return axios.get(
+      `https://${
+        process.env.REACT_APP_AUTH0_DOMAIN
+      }/userinfo/?access_token=${accessToken}`
+    );
+  }
 
-app.get('/api/logout', (req, res) => {
+  function setUserToSessionGetAuthAccessToken(userInfoResponse) {
+    req.session.user = userInfoResponse.data;
+
+    body = {
+      grant_type: "client_credentials",
+      client_id: process.env.AUTH0_API_CLIENT_ID,
+      client_secret: process.env.AUTH0_API_CLIENT_SECRET,
+      audience: `https://${process.env.REACT_APP_AUTH0_DOMAIN}/api/v2/`
+    };
+
+    return axios.post(
+      `https://${process.env.REACT_APP_AUTH0_DOMAIN}/oauth/token`,
+      body
+    );
+  }
+
+  function getGitAccessToken(authAccessTokenResponse) {
+    let options = {
+      headers: {
+        authorization: `Bearer ${authAccessTokenResponse.data.access_token}`
+      }
+    };
+    return axios.get(
+      `https://${process.env.REACT_APP_AUTH0_DOMAIN}/api/v2/users/${
+        req.session.user.sub
+      }`,
+      options
+    );
+  }
+
+  function setGitTokenToSessions(gitAccessToken) {
+    req.session.access_token = gitAccessToken.data.identities[0].access_token;
+    res.redirect("/");
+  }
+
+  exchangeCodeForAccessToken()
+    .then(accessTokenResponse =>
+      exchangeAccessTokenForUserInfo(accessTokenResponse)
+    )
+    .then(userInfoResponse =>
+      setUserToSessionGetAuthAccessToken(userInfoResponse)
+    )
+    .then(authAccessTokenResponse => getGitAccessToken(authAccessTokenResponse))
+    .then(gitAccessToken => setGitTokenToSessions(gitAccessToken))
+    .catch(err => console.log(err));
+});
+
+app.get("/api/star", (req, res) => {
+  const { gitUser, gitRepo } = req.query;
+  axios
+    .put(
+      `https://api.github.com/user/starred/${gitUser}/${gitRepo}?access_token=${
+        req.session.access_token
+      }`
+    )
+    .then(response => {
+      res.status(200).end();
+    })
+    .catch(err => console.log(err));
+});
+
+app.get("/api/unstar", (req, res) => {
+  const { gitUser, gitRepo } = req.query;
+  axios
+    .delete(
+      `https://api.github.com/user/starred/${gitUser}/${gitRepo}?access_token=${
+        req.session.access_token
+      }`
+    )
+    .then(response => {
+      res.status(200).end();
+    })
+    .catch(err => console.log("error", err));
+});
+
+app.get("/api/user-data", (req, res) => {
+  res.status(200).json(req.session.user);
+});
+
+app.get("/api/logout", (req, res) => {
   req.session.destroy();
-  res.send('logged out');
-})
+  res.send("logged out");
+});
 
-const port = 4000;
-app.listen( port, () => { console.log(`Server listening on port ${port}`); } );
+const PORT = process.env.SERVER_PORT || 4000;
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
+});
